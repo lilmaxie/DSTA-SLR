@@ -1,18 +1,18 @@
-import numpy as np
+import numpy as np # numpy, pickle để đọc dữ liệu từ file .npy, .pkl
 import pickle
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset # kế thừa lớp dataset của Pytorch để tạo DataLoader
 import sys
 import random
 
-from graph.sign_27 import Graph
+from graph.sign_27 import Graph # dùng để định nghĩa đồ thị skeleton 27 joints
 
 sys.path.extend(["../"])
 import os
 from einops import rearrange
-from feeders import tools
+from feeders import tools # import các hàm tiền xử lý dữ liệu từ feeders/tools.py
 
-flip_index = np.concatenate(
+flip_index = np.concatenate( # đây là kĩ thuật mirroring augmentation, tạo ra dữ liệu mới bằng cách đảo ngược dữ liệu cũ cho skeleton
     (
         [0, 2, 1, 4, 3, 6, 5],
         [17, 18, 19, 20, 21, 22, 23, 24, 25, 26],
@@ -25,22 +25,22 @@ flip_index = np.concatenate(
 class Feeder(Dataset):
     def __init__(
         self,
-        data_path,
-        label_path,
-        random_choose=False,
-        random_shift=False,
-        random_move=False,
-        window_size=-1,
-        normalization=False,
-        debug=False,
-        use_mmap=True,
+        data_path, # đường dẫn đến file .npy chứa dữ liệu
+        label_path, # đường dẫn đến file .pkl chứa nhãn
+        random_choose=False, # chọn ngẫu nhiên một phần của chuỗi đầu vào
+        random_shift=False, # dịch chuyển dữ liệu theo thời gian bằng cách thêm hoặc bớt các frame 0 vào đầu hoặc cuối chuỗi
+        random_move=False, # áp dụng dịch chuyển dữ liệu theo không gian bằng cách xoay, co giãn, dịch chuyển dữ liệu
+        window_size=-1, # giới hạn số khung hình đầu vào
+        normalization=False, # chuẩn hóa dữ liệu nếu True
+        debug=False, # chế độ debug, để true thì chỉ sử dụng 100 mẫu để kiểm tra
+        use_mmap=True, # dùng memory map để load dữ liệu, giúp tiết kiệm bộ nhớ khi đọc dữ liệu lớn
         random_mirror=False,
         random_mirror_p=0.5,
         is_vector=False,
         lap_pe=False,
-        bone_stream=False,
-        motion_stream=False,
-        num_class=2000,
+        bone_stream=False, # kích hoạt bone stream cho multiple-stream fusion
+        motion_stream=False, # kích hoạt motion stream cho multiple-stream fusion
+        num_class=100 #2000,
     ):
         """
 
@@ -67,16 +67,17 @@ class Feeder(Dataset):
         self.use_mmap = use_mmap
         self.random_mirror = random_mirror
         self.random_mirror_p = random_mirror_p
-        self.load_data()
+        self.load_data() # gọi hàm load_data() để load dữ liệu và nhãn từ file
         self.is_vector = is_vector
         self.lap_pe = lap_pe
         self.bone_stream = bone_stream
         self.motion_stream = motion_stream
         self.num_class = num_class
-        if normalization:
+        if normalization: # nếu là chuẩn hóa dữ liệu thì gọi hàm get_mean_map() để tính giá trị trung bình và độ lệch chuẩn của dữ liệu
             self.get_mean_map()
 
-        if self.lap_pe:
+        """LapPE giúp tăng cường thông tin không gian của skeleton thông qua đồ thị Laplacian."""
+        if self.lap_pe: # nếu là laplacian positional encoding thì tính eig_vals và eig_vecs
             from feeders import posenc
             from torch_geometric.data import Data
             import torch_geometric.transforms as T
@@ -113,6 +114,7 @@ class Feeder(Dataset):
 
         print(len(self.label))
 
+    """Hàm load_data() dùng để load dữ liệu và nhãn từ file .npy và .pkl"""
     def load_data(self):
         # data: N C V T M
 
@@ -125,15 +127,16 @@ class Feeder(Dataset):
                 self.sample_name, self.label = pickle.load(f, encoding="latin1")
 
         # load data
-        if self.use_mmap:
+        if self.use_mmap: # nếu dùng memory map thì load dữ liệu bằng mmap_mode="r"
             self.data = np.load(self.data_path, mmap_mode="r")
         else:
             self.data = np.load(self.data_path)
-        if self.debug:
+        if self.debug: # nếu là chế độ debug thì chỉ sử dụng 100 mẫu
             self.label = self.label[0:100]
             self.data = self.data[0:100]
             self.sample_name = self.sample_name[0:100]
 
+    """Hàm get_mean_map() dùng để tính giá trị trung bình và độ lệch chuẩn của dữ liệu"""
     def get_mean_map(self):
         data = self.data
         N, C, T, V, M = data.shape
@@ -153,11 +156,13 @@ class Feeder(Dataset):
     def __iter__(self):
         return self
 
+    # 160-163: Đọc một mẫu dữ liệu 
     def __getitem__(self, index):
         data_numpy = self.data[index]  # C T V M
         label = self.label[index]
         data_numpy = np.array(data_numpy)
 
+        # nếu dữ liệu có giá trị inf thì gán giá trị 0, dùng cho MLASL
         data_numpy[np.isinf(data_numpy)] = 0  # For MLASL
 
         # remove null frames
@@ -187,6 +192,7 @@ class Feeder(Dataset):
                     data_numpy[i_p, i_f, i_j] = np.dot(matrix_x, joint)
         data_numpy = data_numpy.transpose(3,1,2,0)  # C T V M"""
 
+        # Xử lý Bone Stream: Bone Stream = hiệu giữa hai khớp xương
         if self.bone_stream:
             ori_data = data_numpy
             for v1, v2 in (
@@ -221,6 +227,7 @@ class Feeder(Dataset):
                     ori_data[:, :, v2 - 5, :] - ori_data[:, :, v1 - 5, :]
                 )
 
+        # Xử lý Motion Stream: Motion Stream = hiệu giữa 2 frame liên tiếp
         if self.motion_stream:
             T = data_numpy.shape[1]
             ori_data = data_numpy
@@ -242,6 +249,7 @@ class Feeder(Dataset):
         else:
             data_numpy = tools.random_choose_simple(data_numpy, self.window_size)"""
 
+        # nếu là random_mirror thì áp dụng kĩ thuật mirroring augmentation
         if self.random_mirror:
             if random.random() > self.random_mirror_p:
                 assert data_numpy.shape[2] == 27
@@ -253,9 +261,12 @@ class Feeder(Dataset):
                         512 - data_numpy[0, :, :, :]
                     )  # input size 512*512
 
+        # nếu là chuẩn hóa dữ liệu thì chuẩn hóa dữ liệu bằng cách trừ giá trị trung bình và chia cho độ lệch chuẩn
         if self.normalization:
             # data_numpy = (data_numpy - self.mean_map) / self.std_map
             assert data_numpy.shape[0] == 3
+            
+            # nếu là vector thì chuẩn hóa theo chiều thứ 3 bằng cách trừ giá trị trung bình và chia cho độ lệch chuẩn
             if self.is_vector:
                 data_numpy[0, :, 0, :] = data_numpy[0, :, 0, :] - data_numpy[
                     0, :, 0, 0
@@ -263,6 +274,7 @@ class Feeder(Dataset):
                 data_numpy[1, :, 0, :] = data_numpy[1, :, 0, :] - data_numpy[
                     1, :, 0, 0
                 ].mean(axis=0)
+            # nếu không phải vector thì chuẩn hóa theo chiều thứ 2 bằng cách trừ giá trị trung bình và chia cho độ lệch chuẩn
             else:
                 data_numpy[0, :, :, :] = data_numpy[0, :, :, :] - data_numpy[
                     0, :, 0, 0
@@ -271,6 +283,7 @@ class Feeder(Dataset):
                     1, :, 0, 0
                 ].mean(axis=0)
 
+        # nếu là random_shift thì áp dụng kĩ thuật random shift bằng cách thêm hoặc bớt các frame 0 vào đầu hoặc cuối chuỗi
         if self.random_shift:
             if not self.bone_stream:
                 if self.is_vector:
@@ -313,26 +326,29 @@ class Feeder(Dataset):
         # data_numpy[1,:] = data_numpy[1,:]/256
         return data_numpy, label, index
 
+    """Hàm này kiểm tra xem nhãn thực tế có nằm trong Top-K dự đoán hay không"""
     def top_k(self, score, top_k):
-        rank = score.argsort()
-        hit_top_k = [l in rank[i, -top_k:] for i, l in enumerate(self.label)]
+        rank = score.argsort() # sắp xếp dự đoán theo thứ tự tăng dần
+        hit_top_k = [l in rank[i, -top_k:] for i, l in enumerate(self.label)] # kiểm tra nhãn thực tế có nằm trong top-k dự đoán hay không
         return sum(hit_top_k) * 1.0 / len(hit_top_k)
 
+    """Hàm này tính accuracy theo từng lớp"""
     def per_class_acc_top_k(self, score, top_k):
         rank = score.argsort()
         hit_top_k = [
             l in rank[i, -top_k:] for i, l in enumerate(self.label)
-        ]
+        ] # hit_top_k: lưu trữ kết quả đúng/sai cho từng mẫu.
         acc = [0 for c in range(self.num_class)]
+        # tính accuracy cho từng lớp 
         for c in range(self.num_class):
-            hit_label = [l == c for l in self.label]
+            hit_label = [l == c for l in self.label] # hit_label: lưu trữ kết quả đúng/sai cho từng lớp.
             acc[c] = np.sum(
                 np.array(hit_top_k).astype(np.float32)
                 * np.array(hit_label).astype(np.float32)
             ) / self.label.count(c)
         return np.mean(acc)
 
-
+"""Giúp import module bằng string thay vì phải gọi import module trực tiếp"""
 def import_class(name):
     components = name.split(".")
     mod = __import__(components[0])
@@ -353,6 +369,7 @@ def test(data_path, label_path, vid=None, graph=None, is_3d=False):
     """
     import matplotlib.pyplot as plt
 
+    # khởi tạo dataloader để load dữ liệu
     loader = torch.utils.data.DataLoader(
         dataset=Feeder(data_path, label_path),
         batch_size=64,
@@ -360,49 +377,58 @@ def test(data_path, label_path, vid=None, graph=None, is_3d=False):
         num_workers=2,
     )
 
+    # nếu vid không rỗng thì chỉ hiển thị một mẫu dữ liệu
     if vid is not None:
         sample_name = loader.dataset.sample_name
         sample_id = [name.split(".")[0] for name in sample_name]
         index = sample_id.index(vid)
         data, label, index = loader.dataset[index]
-        data = data.reshape((1,) + data.shape)
+        data = data.reshape((1,) + data.shape) # reshape data về dạng (1, C, T, V, M)
 
         # for batch_idx, (data, label) in enumerate(loader):
-        N, C, T, V, M = data.shape
+        N, C, T, V, M = data.shape # N: số lượng mẫu, C: số lượng kênh, T: số lượng frame, V: số lượng joints, M: số lượng người
 
+        # khởi tạo figure để vẽ dữ liệu, ion là để hiển thị động tác theo thời gian
         plt.ion()
         fig = plt.figure()
         if is_3d:
             from mpl_toolkits.mplot3d import Axes3D
-
+            
+            # hiển thị dữ liệu 3D
             ax = fig.add_subplot(111, projection="3d")
-        else:
+        else: # hiển thị dữ liệu 2D
             ax = fig.add_subplot(111)
 
+        # nếu không có đồ thị khớp xương, hiển thị từng khớp riêng lẻ bằng các điểm màu
         if graph is None:
-            p_type = ["b.", "g.", "r.", "c.", "m.", "y.", "k.", "k.", "k.", "k."]
+            p_type = ["b.", "g.", "r.", "c.", "m.", "y.", "k.", "k.", "k.", "k."] # màu của từng khớp
             pose = [ax.plot(np.zeros(V), np.zeros(V), p_type[m])[0] for m in range(M)]
             ax.axis([-1, 1, -1, 1])
             for t in range(T):
                 for m in range(M):
+                    # pose[m]: cập nhật tọa độ x, y của từng khớp theo thời gian T
                     pose[m].set_xdata(data[0, 0, t, :, m])
                     pose[m].set_ydata(data[0, 1, t, :, m])
                 fig.canvas.draw()
-                plt.pause(0.001)
-        else:
+                plt.pause(0.001) # tạo hiệu ứng chuyển động khi chạy qua từng frame
+        else: # nếu có đồ thị skeleton, vẽ kết nối giữa các khớp
             p_type = ["b-", "g-", "r-", "c-", "m-", "y-", "k-", "k-", "k-", "k-"]
             import sys
             from os import path
 
+            # thêm đường dẫn của thư mục cha vào sys.path
             sys.path.append(
                 path.dirname(path.dirname(path.dirname(path.abspath(__file__))))
             )
+            # import class Graph từ đường dẫn graph để lấy đồ thị skeleton
             G = import_class(graph)()
-            edge = G.inward
+            edge = G.inward # xác định các cặp khớp được kết nối (edge)
             pose = []
+            # vẽ kết nối giữa các khớp
             for m in range(M):
                 a = []
                 for i in range(len(edge)):
+                    # nếu là 3d thì vẽ kết nối giữa các khớp theo 3 chiều (thêm trục z)
                     if is_3d:
                         a.append(ax.plot(np.zeros(3), np.zeros(3), p_type[m])[0])
                     else:
@@ -429,6 +455,7 @@ def test(data_path, label_path, vid=None, graph=None, is_3d=False):
 if __name__ == "__main__":
     import os
 
+    # sau này sẽ thay đổi đoạn này cho phù hợp với dữ liệu của mình
     os.environ["DISPLAY"] = "localhost:10.0"
     data_path = "../data/ntu/xview/val_data_joint.npy"
     label_path = "../data/ntu/xview/val_label.pkl"
