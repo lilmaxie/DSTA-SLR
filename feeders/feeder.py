@@ -356,7 +356,11 @@ def import_class(name):
         mod = getattr(mod, comp)
     return mod
 
-
+"""1. khởi tạo dataloader để load dữ liệu
+   2. chọn mẫu để hiện thị `vid`
+   3. chuẩn bị matplotlib để hiển thị dữ liệu
+   4. hiển thị khớp riêng lẻ
+   5. hiển thị skeleton đầy đủ"""
 def test(data_path, label_path, vid=None, graph=None, is_3d=False):
     """
     vis the samples using matplotlib
